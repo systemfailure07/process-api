@@ -1,0 +1,448 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns:http="http://www.mulesoft.org/schema/mule/http"
+      xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+        http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+    <!-- Process API Listener: port 8083 -->
+    <http:listener-config
+        name="HTTP_Listener_config"
+        doc:name="Process API Listener">
+
+        <http:listener-connection host="0.0.0.0" port="8083"/>
+
+    </http:listener-config>
+
+    <!-- Address System API: port 8081 -->
+    <http:request-config
+        name="HTTP_Request_configuration"
+        doc:name="Address System API Request">
+
+        <http:request-connection host="localhost" port="8081"/>
+
+    </http:request-config>
+
+    <!-- Salesforce System API: port 8082 -->
+    <http:request-config
+        name="salesforcerequestconfig"
+        doc:name="Salesforce System API Request">
+
+        <http:request-connection host="localhost" port="8082"/>
+
+    </http:request-config>
+
+
+    <!-- ===================================================== -->
+    <!-- POST /contacts: Address lookup and Salesforce Upsert -->
+    <!-- ===================================================== -->
+
+    <flow name="postflow" doc:name="Create or Upsert Contact">
+
+        <http:listener
+            config-ref="HTTP_Listener_config"
+            path="/contacts"
+            allowedMethods="POST"
+            doc:name="Create Contact Listener">
+
+            <http:response statusCode="#[vars.httpStatus default 200]">
+                <http:headers><![CDATA[#[{'Content-Type': 'application/json'}]]]></http:headers>
+            </http:response>
+
+            <http:error-response statusCode="#[vars.httpStatus default 500]">
+                <http:body><![CDATA[#[payload]]]></http:body>
+                <http:headers><![CDATA[#[{'Content-Type': 'application/json'}]]]></http:headers>
+            </http:error-response>
+
+        </http:listener>
+
+        <set-variable
+            variableName="contactRequest"
+            value="#[payload]"
+            doc:name="Store Contact Request"/>
+
+        <choice doc:name="Validate Contact Request">
+
+            <when expression="#[((vars.contactRequest is Object) and !isEmpty(vars.contactRequest.externalId default '') and !isEmpty(vars.contactRequest.firstName default '') and !isEmpty(vars.contactRequest.lastName default '') and !isEmpty(vars.contactRequest.email default '') and !isEmpty(vars.contactRequest.phone default '') and (vars.contactRequest.addressId != null))]">
+
+                <!-- Retrieve address from the Address System API -->
+               <http:request
+    method="GET"
+    config-ref="HTTP_Request_configuration"
+    path="/addresses/{addressId}"
+    responseTimeout="30000"
+    doc:name="Get Address Details">
+
+    <http:uri-params><![CDATA[#[{
+        addressId: vars.contactRequest.addressId as String
+    }]]]></http:uri-params>
+
+    <http:response-validator>
+        <http:success-status-code-validator values="200..499"/>
+    </http:response-validator>
+
+</http:request>
+
+                <set-variable
+                    variableName="addressResponseStatus"
+                    value="#[attributes.statusCode]"
+                    doc:name="Capture Address HTTP Status"/>
+
+                <set-variable
+                    variableName="addressDetails"
+                    value="#[payload]"
+                    doc:name="Store Address Details"/>
+
+                <choice doc:name="Check Address Lookup Result">
+
+                    <when expression="#[vars.addressResponseStatus >= 400 or ((vars.addressDetails.success default true) == false)]">
+
+                        <set-variable
+                            variableName="httpStatus"
+                            value="#[vars.addressResponseStatus default 502]"
+                            doc:name="Return Address Error Status"/>
+
+                        <set-payload
+                            value="#[vars.addressDetails]"
+                            doc:name="Return Address Error Body"/>
+
+                    </when>
+
+                    <otherwise>
+
+                        <!-- Combine contact details and database address -->
+                        <ee:transform doc:name="Map Contact and Address for Salesforce">
+
+                            <ee:message>
+                                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    externalId: vars.contactRequest.externalId,
+    firstName: vars.contactRequest.firstName,
+    lastName: vars.contactRequest.lastName,
+    email: vars.contactRequest.email,
+    phone: vars.contactRequest.phone,
+    city: vars.addressDetails.city,
+    state: vars.addressDetails.state,
+    postalCode: vars.addressDetails.postalCode,
+    country: vars.addressDetails.country
+}]]></ee:set-payload>
+                            </ee:message>
+
+                        </ee:transform>
+
+                        <!-- Upsert contact through Salesforce System API -->
+                        <http:request
+                            method="POST"
+                            config-ref="salesforcerequestconfig"
+                            path="/contacts"
+                            doc:name="Upsert Contact in Salesforce System API">
+
+                            <http:headers><![CDATA[#[{
+                                'Content-Type': 'application/json'
+                            }]]]></http:headers>
+
+                            <http:response-validator>
+                                <http:success-status-code-validator values="200..499"/>
+                            </http:response-validator>
+
+                        </http:request>
+
+                        <set-variable
+                            variableName="httpStatus"
+                            value="#[attributes.statusCode]"
+                            doc:name="Capture Salesforce HTTP Status"/>
+
+                    </otherwise>
+
+                </choice>
+
+            </when>
+
+            <otherwise>
+
+                <set-variable
+                    variableName="httpStatus"
+                    value="#[400]"
+                    doc:name="Set Validation Status"/>
+
+                <ee:transform doc:name="Invalid Contact Request Response">
+
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    success: false,
+    code: "VALIDATION_ERROR",
+    message: "Required fields are externalId, firstName, lastName, email, phone, and addressId",
+    correlationId: correlationId
+}]]></ee:set-payload>
+                    </ee:message>
+
+                </ee:transform>
+
+            </otherwise>
+
+        </choice>
+
+        <error-handler ref="processApiGlobalError_Handler"/>
+
+    </flow>
+
+
+    <!-- ===================================================== -->
+    <!-- GET /contacts/{contactId} -->
+    <!-- contactId must be a Salesforce record ID              -->
+    <!-- ===================================================== -->
+
+    <flow name="get-contact-flow" doc:name="Get Contact">
+
+        <http:listener
+            config-ref="HTTP_Listener_config"
+            path="/contacts/{contactId}"
+            allowedMethods="GET"
+            doc:name="Get Contact Listener">
+
+            <http:response statusCode="#[vars.httpStatus default 200]">
+                <http:headers><![CDATA[#[{'Content-Type': 'application/json'}]]]></http:headers>
+            </http:response>
+
+            <http:error-response statusCode="#[vars.httpStatus default 500]">
+                <http:body><![CDATA[#[payload]]]></http:body>
+                <http:headers><![CDATA[#[{'Content-Type': 'application/json'}]]]></http:headers>
+            </http:error-response>
+
+        </http:listener>
+
+        <set-variable
+            variableName="contactId"
+            value="#[attributes.uriParams.contactId as String]"
+            doc:name="Store Salesforce Contact ID"/>
+
+        <http:request
+            method="GET"
+            config-ref="salesforcerequestconfig"
+            path="/contacts/{contactId}"
+            doc:name="Get Contact from Salesforce System API">
+
+            <http:uri-params><![CDATA[#[{
+                contactId: vars.contactId
+            }]]]></http:uri-params>
+
+            <http:response-validator>
+                <http:success-status-code-validator values="200..499"/>
+            </http:response-validator>
+
+        </http:request>
+
+        <set-variable
+            variableName="httpStatus"
+            value="#[attributes.statusCode]"
+            doc:name="Capture Salesforce HTTP Status"/>
+
+        <error-handler ref="processApiGlobalError_Handler"/>
+
+    </flow>
+
+
+    <!-- ===================================================== -->
+    <!-- PUT /contacts/{contactId} -->
+    <!-- contactId must be a Salesforce record ID              -->
+    <!-- ===================================================== -->
+
+    <flow name="update-contact-flow" doc:name="Update Contact">
+
+        <http:listener
+            config-ref="HTTP_Listener_config"
+            path="/contacts/{contactId}"
+            allowedMethods="PUT"
+            doc:name="Update Contact Listener">
+
+            <http:response statusCode="#[vars.httpStatus default 200]">
+                <http:headers><![CDATA[#[{'Content-Type': 'application/json'}]]]></http:headers>
+            </http:response>
+
+            <http:error-response statusCode="#[vars.httpStatus default 500]">
+                <http:body><![CDATA[#[payload]]]></http:body>
+                <http:headers><![CDATA[#[{'Content-Type': 'application/json'}]]]></http:headers>
+            </http:error-response>
+
+        </http:listener>
+
+        <set-variable
+            variableName="contactId"
+            value="#[attributes.uriParams.contactId as String]"
+            doc:name="Store Salesforce Contact ID"/>
+
+        <set-variable
+            variableName="requestBody"
+            value="#[payload]"
+            doc:name="Store Update Request"/>
+
+        <choice doc:name="Validate Update Request">
+
+            <when expression="#[((vars.requestBody is Object) and !isEmpty(vars.requestBody.lastName default vars.requestBody.LastName default ''))]">
+
+                <http:request
+                    method="PUT"
+                    config-ref="salesforcerequestconfig"
+                    path="/contacts/{contactId}"
+                    doc:name="Update Contact in Salesforce System API">
+
+                    <http:body><![CDATA[#[vars.requestBody]]]></http:body>
+
+                    <http:headers><![CDATA[#[{
+                        'Content-Type': 'application/json'
+                    }]]]></http:headers>
+
+                    <http:uri-params><![CDATA[#[{
+                        contactId: vars.contactId
+                    }]]]></http:uri-params>
+
+                    <http:response-validator>
+                        <http:success-status-code-validator values="200..499"/>
+                    </http:response-validator>
+
+                </http:request>
+
+                <set-variable
+                    variableName="httpStatus"
+                    value="#[attributes.statusCode]"
+                    doc:name="Capture Salesforce HTTP Status"/>
+
+            </when>
+
+            <otherwise>
+
+                <set-variable
+                    variableName="httpStatus"
+                    value="#[400]"
+                    doc:name="Set Validation Status"/>
+
+                <ee:transform doc:name="Invalid Update Request Response">
+
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    success: false,
+    code: "VALIDATION_ERROR",
+    message: "lastName is required for Contact update",
+    correlationId: correlationId
+}]]></ee:set-payload>
+                    </ee:message>
+
+                </ee:transform>
+
+            </otherwise>
+
+        </choice>
+
+        <error-handler ref="processApiGlobalError_Handler"/>
+
+    </flow>
+
+
+    <!-- ===================================================== -->
+    <!-- DELETE /contacts/{contactId} -->
+    <!-- contactId must be a Salesforce record ID              -->
+    <!-- ===================================================== -->
+
+    <flow name="delete-contact-flow" doc:name="Delete Contact">
+
+        <http:listener
+            config-ref="HTTP_Listener_config"
+            path="/contacts/{contactId}"
+            allowedMethods="DELETE"
+            doc:name="Delete Contact Listener">
+
+            <http:response statusCode="#[vars.httpStatus default 200]">
+                <http:headers><![CDATA[#[{'Content-Type': 'application/json'}]]]></http:headers>
+            </http:response>
+
+            <http:error-response statusCode="#[vars.httpStatus default 500]">
+                <http:body><![CDATA[#[payload]]]></http:body>
+                <http:headers><![CDATA[#[{'Content-Type': 'application/json'}]]]></http:headers>
+            </http:error-response>
+
+        </http:listener>
+
+        <set-variable
+            variableName="contactId"
+            value="#[attributes.uriParams.contactId as String]"
+            doc:name="Store Salesforce Contact ID"/>
+
+        <http:request
+            method="DELETE"
+            config-ref="salesforcerequestconfig"
+            path="/contacts/{contactId}"
+            doc:name="Delete Contact in Salesforce System API">
+
+            <http:uri-params><![CDATA[#[{
+                contactId: vars.contactId
+            }]]]></http:uri-params>
+
+            <http:response-validator>
+                <http:success-status-code-validator values="200..499"/>
+            </http:response-validator>
+
+        </http:request>
+
+        <set-variable
+            variableName="httpStatus"
+            value="#[attributes.statusCode]"
+            doc:name="Capture Salesforce HTTP Status"/>
+
+        <error-handler ref="processApiGlobalError_Handler"/>
+
+    </flow>
+
+
+    <!-- Shared Process API error handler -->
+    <error-handler
+        name="processApiGlobalError_Handler"
+        doc:name="Process API Global Error Handler">
+
+        <on-error-continue
+            type="ANY"
+            logException="true"
+            enableNotifications="true">
+
+            <set-variable
+                variableName="httpStatus"
+                value="#[502]"
+                doc:name="Set Bad Gateway Status"/>
+
+            <logger
+                level="ERROR"
+                doc:name="Log Process API Error"
+                message="#[ 'Process API downstream request failed. correlationId=' ++ correlationId ++ '; errorType=' ++ (error.errorType.identifier default 'UNKNOWN') ]"/>
+
+            <ee:transform doc:name="Standard Process API Error Response">
+
+                <ee:message>
+                    <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    success: false,
+    code: "DOWNSTREAM_SERVICE_ERROR",
+    message: "A downstream service could not complete the request",
+    correlationId: correlationId
+}]]></ee:set-payload>
+                </ee:message>
+
+            </ee:transform>
+
+        </on-error-continue>
+
+    </error-handler>
+
+</mule>
