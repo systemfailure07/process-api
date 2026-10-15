@@ -1,0 +1,348 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns:munit="http://www.mulesoft.org/schema/mule/munit"
+      xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+      xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+http://www.mulesoft.org/schema/mule/munit http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd 
+        http://www.mulesoft.org/schema/mule/core
+        http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/munit
+        http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+        http://www.mulesoft.org/schema/mule/munit-tools
+        http://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd">
+
+    <munit:config name="new-test-suite"/>
+
+    <!-- TEST 1: POST CONTACT SUCCESS -->
+
+    <munit:test name="post-contact-success-test"
+                description="Test successful contact creation">
+
+        <munit:behavior>
+
+            <munit-tools:mock-when processor="http:request">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute
+                        attributeName="doc:name"
+                        whereValue="#['Get Address Details']"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload
+                        value="#[{addressId: 101, street: 'Main Street', city: 'Hyderabad', state: 'Telangana', postalCode: '500001', country: 'India'}]"
+                        mediaType="application/java"/>
+                    <munit-tools:attributes
+                        value="#[{statusCode: 200, reasonPhrase: 'OK'}]"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+
+            <munit-tools:mock-when processor="http:request">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute
+                        attributeName="doc:name"
+                        whereValue="#['Upsert Contact in Salesforce System API']"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload
+                        value="#[{id: '003TEST001', externalId: 'EXT001', firstName: 'Ravi', lastName: 'Kumar', email: 'ravi@example.com', phone: '9876543210'}]"
+                        mediaType="application/java"/>
+                    <munit-tools:attributes
+                        value="#[{statusCode: 200, reasonPhrase: 'OK'}]"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+
+        </munit:behavior>
+
+        <munit:execution>
+            <munit:set-event>
+                <munit:payload
+                    value="#[{externalId: 'EXT001', firstName: 'Ravi', lastName: 'Kumar', email: 'ravi@example.com', phone: '9876543210', addressId: 101}]"
+                    mediaType="application/java"/>
+            </munit:set-event>
+            <flow-ref name="postflow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:assert-that
+                expression="#[payload != null]"
+                is="#[MunitTools::equalTo(true)]"
+                message="POST should return a response"/>
+        </munit:validation>
+
+    </munit:test>
+
+
+    <!-- TEST 2: POST CONTACT INVALID REQUEST -->
+
+    <munit:test name="post-contact-invalid-request-test"
+                description="Test POST validation failure">
+
+        <munit:execution>
+            <munit:set-event>
+                <munit:payload
+                    value="#[{externalId: '', firstName: '', lastName: '', email: '', phone: '', addressId: null}]"
+                    mediaType="application/java"/>
+            </munit:set-event>
+            <flow-ref name="postflow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:assert-that
+                expression="#[payload.code == 'VALIDATION_ERROR']"
+                is="#[MunitTools::equalTo(true)]"
+                message="Invalid POST should return VALIDATION_ERROR"/>
+        </munit:validation>
+
+    </munit:test>
+
+
+    <!-- TEST 3: POST CONTACT ADDRESS NOT FOUND -->
+
+    <munit:test name="post-contact-address-not-found-test"
+                description="Test address not found handling">
+
+        <munit:behavior>
+            <munit-tools:mock-when processor="http:request">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute
+                        attributeName="doc:name"
+                        whereValue="#['Get Address Details']"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload
+                        value="#[{success: false, message: 'Address not found'}]"
+                        mediaType="application/java"/>
+                    <munit-tools:attributes
+                        value="#[{statusCode: 404, reasonPhrase: 'Not Found'}]"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <munit:set-event>
+                <munit:payload
+                    value="#[{externalId: 'EXT002', firstName: 'Ravi', lastName: 'Kumar', email: 'ravi@example.com', phone: '9876543210', addressId: 999}]"
+                    mediaType="application/java"/>
+            </munit:set-event>
+            <flow-ref name="postflow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:assert-that
+                expression="#[payload != null]"
+                is="#[MunitTools::equalTo(true)]"
+                message="Address error should return a response"/>
+        </munit:validation>
+
+    </munit:test>
+
+
+    <!-- TEST 4: GET CONTACT SUCCESS -->
+
+    <munit:test name="get-contact-success-test"
+                description="Test successful contact retrieval">
+
+        <munit:behavior>
+            <munit-tools:mock-when processor="http:request">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute
+                        attributeName="doc:name"
+                        whereValue="#['Get Contact from Salesforce System API']"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload
+                        value="#[{id: '003TEST001', firstName: 'Ravi', lastName: 'Kumar', email: 'ravi@example.com', phone: '9876543210'}]"
+                        mediaType="application/java"/>
+                    <munit-tools:attributes
+                        value="#[{statusCode: 200, reasonPhrase: 'OK'}]"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <munit:set-event>
+                <munit:payload
+                    value="#[{contactId: '003TEST001'}]"
+                    mediaType="application/java"/>
+                <munit:attributes
+                    value="#[{uriParams: {contactId: '003TEST001'}}]"
+                    mediaType="application/java"/>
+            </munit:set-event>
+            <flow-ref name="get-contact-flow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:assert-that
+                expression="#[payload != null]"
+                is="#[MunitTools::equalTo(true)]"
+                message="GET should return a contact response"/>
+        </munit:validation>
+
+    </munit:test>
+
+
+    <!-- TEST 5: UPDATE CONTACT SUCCESS -->
+
+    <munit:test name="update-contact-success-test"
+                description="Test successful contact update">
+
+        <munit:behavior>
+            <munit-tools:mock-when processor="http:request">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute
+                        attributeName="doc:name"
+                        whereValue="#['Update Contact in Salesforce System API']"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload
+                        value="#[{id: '003TEST001', firstName: 'Ravi', lastName: 'Updated', email: 'ravi@example.com', phone: '9876543210'}]"
+                        mediaType="application/java"/>
+                    <munit-tools:attributes
+                        value="#[{statusCode: 200, reasonPhrase: 'OK'}]"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <munit:set-event>
+                <munit:payload
+                    value="#[{lastName: 'Updated', email: 'ravi@example.com', phone: '9876543210'}]"
+                    mediaType="application/java"/>
+                <munit:attributes
+                    value="#[{uriParams: {contactId: '003TEST001'}}]"
+                    mediaType="application/java"/>
+            </munit:set-event>
+
+            <set-variable
+                variableName="requestBody"
+                value="#[{lastName: 'Updated', email: 'ravi@example.com', phone: '9876543210'}]"/>
+
+            <flow-ref name="update-contact-flow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:assert-that
+                expression="#[payload != null]"
+                is="#[MunitTools::equalTo(true)]"
+                message="Update should return a response"/>
+        </munit:validation>
+
+    </munit:test>
+
+
+    <!-- TEST 6: UPDATE CONTACT INVALID REQUEST -->
+
+    <munit:test name="update-contact-invalid-request-test"
+                description="Test update validation failure">
+
+        <munit:execution>
+            <munit:set-event>
+                <munit:payload
+                    value="#[{email: 'ravi@example.com', phone: '9876543210'}]"
+                    mediaType="application/java"/>
+                <munit:attributes
+                    value="#[{uriParams: {contactId: '003TEST001'}}]"
+                    mediaType="application/java"/>
+            </munit:set-event>
+
+            <set-variable
+                variableName="requestBody"
+                value="#[{email: 'ravi@example.com', phone: '9876543210'}]"/>
+
+            <flow-ref name="update-contact-flow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:assert-that
+                expression="#[payload != null]"
+                is="#[MunitTools::equalTo(true)]"
+                message="Invalid update should return an error response"/>
+        </munit:validation>
+
+    </munit:test>
+
+
+    <!-- TEST 7: DELETE CONTACT SUCCESS -->
+
+    <munit:test name="delete-contact-success-test"
+                description="Test successful contact deletion">
+
+        <munit:behavior>
+            <munit-tools:mock-when processor="http:request">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute
+                        attributeName="doc:name"
+                        whereValue="#['Delete Contact in Salesforce System API']"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:payload
+                        value="#[{success: true, message: 'Contact deleted'}]"
+                        mediaType="application/java"/>
+                    <munit-tools:attributes
+                        value="#[{statusCode: 200, reasonPhrase: 'OK'}]"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <munit:set-event>
+                <munit:payload
+                    value="#[{contactId: '003TEST001'}]"
+                    mediaType="application/java"/>
+                <munit:attributes
+                    value="#[{uriParams: {contactId: '003TEST001'}}]"
+                    mediaType="application/java"/>
+            </munit:set-event>
+            <flow-ref name="delete-contact-flow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:assert-that
+                expression="#[payload != null]"
+                is="#[MunitTools::equalTo(true)]"
+                message="DELETE should return a response"/>
+        </munit:validation>
+
+    </munit:test>
+
+
+    <!-- TEST 8: GET CONTACT CONNECTIVITY ERROR -->
+
+    <munit:test name="get-contact-connectivity-error-test"
+                description="Test downstream connectivity error handling">
+
+        <munit:behavior>
+            <munit-tools:mock-when processor="http:request">
+                <munit-tools:with-attributes>
+                    <munit-tools:with-attribute
+                        attributeName="doc:name"
+                        whereValue="#['Get Contact from Salesforce System API']"/>
+                </munit-tools:with-attributes>
+                <munit-tools:then-return>
+                    <munit-tools:error typeId="HTTP:CONNECTIVITY"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <munit:set-event>
+                <munit:payload
+                    value="#[{contactId: '003ERROR001'}]"
+                    mediaType="application/java"/>
+                <munit:attributes
+                    value="#[{uriParams: {contactId: '003ERROR001'}}]"
+                    mediaType="application/java"/>
+            </munit:set-event>
+            <flow-ref name="get-contact-flow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:assert-that
+                expression="#[payload != null]"
+                is="#[MunitTools::equalTo(true)]"
+                message="Connectivity error should be handled"/>
+        </munit:validation>
+
+    </munit:test>
+
+</mule>
